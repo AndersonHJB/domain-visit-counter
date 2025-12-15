@@ -9,7 +9,7 @@ const DATA_FILE = path.join(__dirname, "data.json");
 const CONFIG_FILE = path.join(__dirname, "config.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
 
-/* ------------------ 工具方法 ------------------ */
+/* ------------------ 工具 ------------------ */
 
 let writing = Promise.resolve();
 function withLock(fn) {
@@ -87,7 +87,7 @@ function anonymizeIp(ip) {
   return ip;
 }
 
-/* ------------------ 域名校验 ------------------ */
+/* ------------------ 域名白名单 ------------------ */
 
 function isAllowedDomain(domain, cfg) {
   if (cfg.allowAll) return true;
@@ -111,7 +111,7 @@ app.get("/counter.js", (req, res) =>
   res.sendFile(path.join(PUBLIC_DIR, "counter.js"))
 );
 
-/* ------------------ 数据读写 ------------------ */
+/* ------------------ 数据 ------------------ */
 
 function readData() {
   return readJsonSafe(DATA_FILE, { version: 2, domains: {} });
@@ -143,6 +143,7 @@ function hitHandler(req, res) {
 
   withLock(() => {
     const db = readData();
+
     if (!db.domains[domain]) {
       db.domains[domain] = {
         total: 0,
@@ -153,6 +154,11 @@ function hitHandler(req, res) {
     }
 
     const d = db.domains[domain];
+
+    // 🔥 关键兜底：兼容旧数据
+    if (!d.ips || typeof d.ips !== "object") d.ips = {};
+    if (!d.projects || typeof d.projects !== "object") d.projects = {};
+
     d.total += 1;
     d.last = now;
 
@@ -198,8 +204,11 @@ app.get("/stats", (req, res) => {
   const db = readData();
   const d = db.domains[domain] || { total: 0, last: 0, projects: {} };
 
+  // 🔥 兜底
+  if (!d.projects || typeof d.projects !== "object") d.projects = {};
+
   if (project) {
-    const p = d.projects?.[project] || { total: 0, last: 0 };
+    const p = d.projects[project] || { total: 0, last: 0 };
     return res.json({
       ok: true,
       domain,
