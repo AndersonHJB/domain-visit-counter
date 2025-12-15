@@ -57,11 +57,29 @@ app.use((req, res, next) => {
 app.use("/public", express.static(PUBLIC_DIR, { maxAge: "1h" }));
 
 // 访问计数：/hit?d=example.com
-app.get("/hit", (req, res) => {
+// app.get("/hit", (req, res) => {
+//   const d = sanitizeDomain(req.query.d);
+//   if (!d) return res.status(400).json({ ok: false, error: "invalid domain" });
+
+//   // 尽量不阻塞：返回 204，同时后台写入（这里仍是串行锁写，避免并发写坏文件）
+//   withLock(() => {
+//     const counts = readCounts();
+//     const now = Date.now();
+
+//     if (!counts[d]) counts[d] = { total: 0, last: 0 };
+//     counts[d].total += 1;
+//     counts[d].last = now;
+
+//     writeCounts(counts);
+//   });
+
+//   // 204：像统计像素一样，不返回内容
+//   res.status(204).end();
+// });
+function hitHandler(req, res) {
   const d = sanitizeDomain(req.query.d);
   if (!d) return res.status(400).json({ ok: false, error: "invalid domain" });
 
-  // 尽量不阻塞：返回 204，同时后台写入（这里仍是串行锁写，避免并发写坏文件）
   withLock(() => {
     const counts = readCounts();
     const now = Date.now();
@@ -73,9 +91,13 @@ app.get("/hit", (req, res) => {
     writeCounts(counts);
   });
 
-  // 204：像统计像素一样，不返回内容
+  // sendBeacon 不在乎响应体，204 最合适
   res.status(204).end();
-});
+}
+
+app.get("/hit", hitHandler);
+app.post("/hit", hitHandler);
+
 
 // 查询：/stats?d=example.com
 app.get("/stats", (req, res) => {
