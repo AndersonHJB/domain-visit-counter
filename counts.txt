@@ -1,0 +1,6 @@
+{
+  "counter.bornforthis.cn": {
+    "total": 3,
+    "last": 1765757804188
+  }
+}

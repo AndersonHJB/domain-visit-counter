@@ -1,39 +1,82 @@
 // public/counter.js
 (() => {
-  // 统计服务地址：默认用当前脚本的来源域名（推荐把 counter.js 放在统计服务器上）
   const script = document.currentScript;
   const serverOrigin = new URL(script.src).origin;
 
-  // 被统计的域名：默认用当前页面 hostname
   const domain = (script.dataset.domain || location.hostname || "").toLowerCase();
-
-  // 显示位置：默认找 #visit-count，也可通过 data-target 指定选择器
-  const targetSelector = script.dataset.target || "#visit-count";
-
-  // 是否显示文字前缀（可选）
+  const targetSelector = script.dataset.target || ""; // 可选：自动填充某个元素
   const prefix = script.dataset.prefix || "";
+  const pollMs = parseInt(script.dataset.poll || "0", 10); // 可选：轮询刷新，单位 ms
 
-  // 发起统计（不阻塞页面）
-  const hitUrl = `${serverOrigin}/hit?d=${encodeURIComponent(domain)}`;
+  const state = {
+    domain,
+    serverOrigin,
+    data: null,
+    listeners: new Set(),
+  };
 
-  // 尽量用 sendBeacon，失败再用 fetch/no-cors
-  try {
-    if (navigator.sendBeacon) {
-      navigator.sendBeacon(hitUrl);
-    } else {
-      fetch(hitUrl, { mode: "no-cors", cache: "no-store" }).catch(() => {});
-    }
-  } catch {}
+  const emit = (data) => {
+    state.listeners.forEach((fn) => {
+      try { fn(data); } catch {}
+    });
+    // 同时派发 DOM 事件，方便不用全局变量的写法
+    try {
+      window.dispatchEvent(new CustomEvent("bftcounter:update", { detail: data }));
+    } catch {}
+  };
 
-  // 拉取并展示
-  const statsUrl = `${serverOrigin}/stats?d=${encodeURIComponent(domain)}`;
+  const hit = () => {
+    const hitUrl = `${serverOrigin}/hit?d=${encodeURIComponent(domain)}`;
+    try {
+      if (navigator.sendBeacon) navigator.sendBeacon(hitUrl);
+      else fetch(hitUrl, { mode: "no-cors", cache: "no-store" }).catch(() => {});
+    } catch {}
+  };
 
-  fetch(statsUrl, { cache: "no-store" })
-    .then(r => r.json())
-    .then(data => {
-      if (!data || !data.ok) return;
+  const get = async () => {
+    const statsUrl = `${serverOrigin}/stats?d=${encodeURIComponent(domain)}`;
+    const r = await fetch(statsUrl, { cache: "no-store" });
+    const json = await r.json();
+    if (!json || !json.ok) throw new Error("stats_failed");
+    state.data = json;
+    emit(json);
+
+    // 可选：自动填充某个 DOM
+    if (targetSelector) {
       const el = document.querySelector(targetSelector);
-      if (el) el.textContent = `${prefix}${data.total}`;
-    })
-    .catch(() => {});
+      if (el) el.textContent = `${prefix}${json.total}`;
+    }
+    return json;
+  };
+
+  const on = (fn) => {
+    state.listeners.add(fn);
+    // 如果已经有数据，立即推一次，方便首次渲染
+    if (state.data) {
+      try { fn(state.data); } catch {}
+    }
+    return () => state.listeners.delete(fn);
+  };
+
+  // 暴露全局 API
+  window.BFTCounter = {
+    domain,
+    serverOrigin,
+    hit,
+    get,
+    on,
+    // 给框架用的：直接读最后一次缓存
+    peek: () => state.data,
+  };
+
+  // 默认行为：统计 + 拉取一次
+  hit();
+  get().catch(() => {});
+
+  // 可选：轮询刷新（比如 data-poll="5000"）
+  if (pollMs > 0 && Number.isFinite(pollMs)) {
+    setInterval(() => {
+      get().catch(() => {});
+    }, pollMs);
+  }
 })();
