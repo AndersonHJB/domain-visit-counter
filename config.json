@@ -1,0 +1,5 @@
+{
+  "allowAll": true,
+  "allowedRootDomains": ["bornforthis.cn", "example.com"],
+  "anonymizeIp": false
+}
