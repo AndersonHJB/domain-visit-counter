@@ -498,4 +498,7 @@ Your original features are preserved, and same-domain multi-project counting wor
 
 ## License
 
-按你的仓库实际 License 填写（如未设置，可先用 MIT）。
+
+> 现在要实现一个功能：单个存储文件 data.json 只会越来越大，需要实现多个文件存储。
+
+[.](https://chatgpt.com/g/g-p-6765387283dc81918c063068749eada5-zi-ji-kai-fa-xiang-mu/c/693ff0ab-b920-8329-beff-22bfbe59604c)
