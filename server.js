@@ -9,6 +9,8 @@ const DATA_FILE = path.join(__dirname, "data.json");
 const CONFIG_FILE = path.join(__dirname, "config.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
 
+/* ------------------ 工具方法 ------------------ */
+
 let writing = Promise.resolve();
 function withLock(fn) {
   writing = writing.then(fn, fn);
@@ -39,15 +41,15 @@ function loadConfig() {
     anonymizeIp: false,
   });
   cfg.allowAll = !!cfg.allowAll;
-  cfg.allowedRootDomains = Array.isArray(cfg.allowedRootDomains) ? cfg.allowedRootDomains : [];
-  cfg.allowedRootDomains = cfg.allowedRootDomains
-    .map((s) => String(s).toLowerCase().trim())
+  cfg.allowedRootDomains = (cfg.allowedRootDomains || [])
+    .map(s => String(s).toLowerCase().trim())
     .filter(Boolean);
   cfg.anonymizeIp = !!cfg.anonymizeIp;
   return cfg;
 }
 
-// 只允许域名字符
+/* ------------------ 校验 ------------------ */
+
 function sanitizeDomain(s) {
   if (!s) return "";
   s = String(s).toLowerCase().trim();
@@ -55,43 +57,47 @@ function sanitizeDomain(s) {
   return s;
 }
 
-// 从 Nginx 反代拿真实 IP：优先 X-Forwarded-For
+function sanitizeProject(s) {
+  if (!s) return "";
+  s = String(s).toLowerCase().trim();
+  if (!/^[a-z0-9-_]{1,64}$/.test(s)) return "";
+  return s;
+}
+
+/* ------------------ IP ------------------ */
+
 function getClientIp(req) {
   const xff = req.headers["x-forwarded-for"];
   if (xff) {
-    // 可能是 "client, proxy1, proxy2"
     const first = String(xff).split(",")[0].trim();
     if (first) return first;
   }
-  const realIp = req.headers["x-real-ip"];
-  if (realIp) return String(realIp).trim();
-  return req.socket?.remoteAddress || "";
+  return req.headers["x-real-ip"] || req.socket?.remoteAddress || "";
 }
 
-// 可选：IP 脱敏（IPv4 -> /24，IPv6 -> 截断）
 function anonymizeIp(ip) {
   if (!ip) return "";
-  // IPv4
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) {
-    const parts = ip.split(".");
-    return `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(ip)) {
+    const p = ip.split(".");
+    return `${p[0]}.${p[1]}.${p[2]}.0/24`;
   }
-  // IPv6 简单截断
   if (ip.includes(":")) {
     return ip.split(":").slice(0, 4).join(":") + "::/64";
   }
   return ip;
 }
 
-// 判断是否允许 domain（按根域名）
+/* ------------------ 域名校验 ------------------ */
+
 function isAllowedDomain(domain, cfg) {
   if (cfg.allowAll) return true;
-  if (!domain) return false;
-  // 允许 root 本身或其子域名：xxx.root
-  return cfg.allowedRootDomains.some((root) => domain === root || domain.endsWith("." + root));
+  return cfg.allowedRootDomains.some(
+    root => domain === root || domain.endsWith("." + root)
+  );
 }
 
-// 允许跨域（前端 fetch stats / hit）
+/* ------------------ CORS ------------------ */
+
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
@@ -101,87 +107,118 @@ app.use((req, res, next) => {
 });
 
 app.use("/public", express.static(PUBLIC_DIR, { maxAge: "1h" }));
-app.get("/counter.js", (req, res) => res.sendFile(path.join(PUBLIC_DIR, "counter.js")));
+app.get("/counter.js", (req, res) =>
+  res.sendFile(path.join(PUBLIC_DIR, "counter.js"))
+);
+
+/* ------------------ 数据读写 ------------------ */
 
 function readData() {
-  return readJsonSafe(DATA_FILE, { version: 1, domains: {} });
+  return readJsonSafe(DATA_FILE, { version: 2, domains: {} });
 }
 
 function writeData(data) {
   writeJsonAtomic(DATA_FILE, data);
 }
 
-// 计数逻辑（GET/POST 都走它）
+/* ------------------ HIT ------------------ */
+
 function hitHandler(req, res) {
   const cfg = loadConfig();
 
-  const d = sanitizeDomain(req.query.d);
-  if (!d) {
-    return res.status(400).json({ ok: false, error: "invalid_domain", msg: "invalid_domain" });
+  const domain = sanitizeDomain(req.query.d);
+  const project = sanitizeProject(req.query.p);
+
+  if (!domain) {
+    return res.status(400).json({ ok: false, msg: "invalid_domain" });
   }
 
-  if (!isAllowedDomain(d, cfg)) {
-    return res.status(403).json({ ok: false, error: "domain_not_allowed", msg: "domain_not_allowed" });
+  if (!isAllowedDomain(domain, cfg)) {
+    return res.status(403).json({ ok: false, msg: "domain_not_allowed" });
   }
 
+  const now = Date.now();
   const rawIp = getClientIp(req);
   const ip = cfg.anonymizeIp ? anonymizeIp(rawIp) : rawIp;
 
-  const now = Date.now();
-
   withLock(() => {
     const db = readData();
-    if (!db.domains[d]) db.domains[d] = { total: 0, last: 0, ips: {} };
+    if (!db.domains[domain]) {
+      db.domains[domain] = {
+        total: 0,
+        last: 0,
+        ips: {},
+        projects: {}
+      };
+    }
 
-    const item = db.domains[d];
-    item.total += 1;
-    item.last = now;
+    const d = db.domains[domain];
+    d.total += 1;
+    d.last = now;
+
+    if (project) {
+      if (!d.projects[project]) {
+        d.projects[project] = { total: 0, last: 0 };
+      }
+      d.projects[project].total += 1;
+      d.projects[project].last = now;
+    }
 
     if (ip) {
-      if (!item.ips[ip]) item.ips[ip] = { count: 0, first: now, last: now };
-      item.ips[ip].count += 1;
-      item.ips[ip].last = now;
+      if (!d.ips[ip]) d.ips[ip] = { count: 0, first: now, last: now };
+      d.ips[ip].count += 1;
+      d.ips[ip].last = now;
     }
 
     writeData(db);
   });
 
-  // ✅ 默认保持 204（不破坏 sendBeacon/原逻辑）
-  const debug = String(req.query.debug || "") === "1";
-  if (debug) {
-    return res.json({ ok: true, domain: d, ts: now });
-  }
   res.status(204).end();
 }
 
 app.get("/hit", hitHandler);
 app.post("/hit", hitHandler);
 
-// stats
+/* ------------------ STATS ------------------ */
+
 app.get("/stats", (req, res) => {
   const cfg = loadConfig();
 
-  const d = sanitizeDomain(req.query.d);
-  if (!d) {
-    return res.status(400).json({ ok: false, error: "invalid_domain", msg: "invalid_domain" });
+  const domain = sanitizeDomain(req.query.d);
+  const project = sanitizeProject(req.query.p);
+
+  if (!domain) {
+    return res.status(400).json({ ok: false, msg: "invalid_domain" });
   }
 
-  if (!isAllowedDomain(d, cfg)) {
-    return res.status(403).json({ ok: false, error: "domain_not_allowed", msg: "domain_not_allowed" });
+  if (!isAllowedDomain(domain, cfg)) {
+    return res.status(403).json({ ok: false, msg: "domain_not_allowed" });
   }
-
-  const includeIps = String(req.query.includeIps || "") === "1";
 
   const db = readData();
-  const item = db.domains[d] || { total: 0, last: 0, ips: {} };
+  const d = db.domains[domain] || { total: 0, last: 0, projects: {} };
 
-  const payload = { ok: true, domain: d, total: item.total, last: item.last };
+  if (project) {
+    const p = d.projects?.[project] || { total: 0, last: 0 };
+    return res.json({
+      ok: true,
+      domain,
+      project,
+      total: p.total,
+      last: p.last
+    });
+  }
 
-  if (includeIps) payload.ips = item.ips;
-
-  res.json(payload);
+  res.json({
+    ok: true,
+    domain,
+    total: d.total,
+    last: d.last
+  });
 });
 
+/* ------------------ START ------------------ */
+
 app.listen(PORT, () => {
-  console.log(`Counter server running: http://127.0.0.1:${PORT}`);
+  console.log(`Counter server running at http://127.0.0.1:${PORT}`);
 });
