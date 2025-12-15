@@ -1,5 +1,5 @@
 {
   "allowAll": true,
-  "allowedRootDomains": ["bornforthis.cn", "aistudio.google.com"],
+  "allowedRootDomains": ["bornforthis.cn", "aistudio.google.com", "gemini.google.com"],
   "anonymizeIp": false
 }
