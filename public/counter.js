@@ -1,6 +1,8 @@
 // public/counter.js
 (() => {
   const script = document.currentScript;
+  if (!script || !script.src) return;
+
   const serverOrigin = new URL(script.src).origin;
 
   const domain = (script.dataset.domain || location.hostname || "").toLowerCase();
@@ -25,27 +27,58 @@
     } catch {}
   };
 
+  const fillTarget = (json) => {
+    if (!targetSelector) return;
+    try {
+      const el = document.querySelector(targetSelector);
+      if (el) el.textContent = `${prefix}${(json && json.total != null) ? json.total : 0}`;
+    } catch {}
+  };
+
   const hit = () => {
     const hitUrl = `${serverOrigin}/hit?d=${encodeURIComponent(domain)}`;
     try {
-      if (navigator.sendBeacon) navigator.sendBeacon(hitUrl);
-      else fetch(hitUrl, { mode: "no-cors", cache: "no-store" }).catch(() => {});
+      // sendBeacon 最适合“只上报不关心返回”的计数
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon(hitUrl);
+      } else {
+        // 不用 no-cors，避免吞错误（你服务已允许跨域）
+        fetch(hitUrl, { cache: "no-store" }).catch(() => {});
+      }
     } catch {}
   };
 
   const get = async () => {
     const statsUrl = `${serverOrigin}/stats?d=${encodeURIComponent(domain)}`;
+
     const r = await fetch(statsUrl, { cache: "no-store" });
-    const json = await r.json();
-    if (!json || !json.ok) throw new Error("stats_failed");
+
+    // 先处理 HTTP 层错误，避免直接 r.json() 崩
+    if (!r.ok) {
+      throw new Error(`stats_http_${r.status}`);
+    }
+
+    // 用 text 再 parse，能处理空响应/非 JSON（比如反代错误页）
+    const text = await r.text();
+    if (!text) {
+      throw new Error("stats_empty");
+    }
+
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      throw new Error("stats_bad_json");
+    }
+
+    if (!json || !json.ok) {
+      // 如果后端有 msg，直接透出更好定位
+      throw new Error(json && json.msg ? String(json.msg) : "stats_failed");
+    }
+
     state.data = json;
     emit(json);
-
-    // 可选：自动填充某个 DOM
-    if (targetSelector) {
-      const el = document.querySelector(targetSelector);
-      if (el) el.textContent = `${prefix}${json.total}`;
-    }
+    fillTarget(json);
     return json;
   };
 
@@ -58,25 +91,30 @@
     return () => state.listeners.delete(fn);
   };
 
-  // 暴露全局 API
+  // 暴露全局 API（保持不变）
   window.BFTCounter = {
     domain,
     serverOrigin,
     hit,
     get,
     on,
-    // 给框架用的：直接读最后一次缓存
     peek: () => state.data,
   };
 
-  // 默认行为：统计 + 拉取一次
+  // 默认行为：统计 + 拉取一次（保持不变）
   hit();
   get().catch(() => {});
 
   // 可选：轮询刷新（比如 data-poll="5000"）
+  // 为避免慢网叠加请求，做一个“单飞”锁
   if (pollMs > 0 && Number.isFinite(pollMs)) {
+    let inflight = false;
     setInterval(() => {
-      get().catch(() => {});
+      if (inflight) return;
+      inflight = true;
+      get().catch(() => {}).finally(() => {
+        inflight = false;
+      });
     }, pollMs);
   }
 })();

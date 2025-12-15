@@ -41,7 +41,7 @@ function loadConfig() {
   cfg.allowAll = !!cfg.allowAll;
   cfg.allowedRootDomains = Array.isArray(cfg.allowedRootDomains) ? cfg.allowedRootDomains : [];
   cfg.allowedRootDomains = cfg.allowedRootDomains
-    .map(s => String(s).toLowerCase().trim())
+    .map((s) => String(s).toLowerCase().trim())
     .filter(Boolean);
   cfg.anonymizeIp = !!cfg.anonymizeIp;
   return cfg;
@@ -88,9 +88,7 @@ function isAllowedDomain(domain, cfg) {
   if (cfg.allowAll) return true;
   if (!domain) return false;
   // 允许 root 本身或其子域名：xxx.root
-  return cfg.allowedRootDomains.some(root =>
-    domain === root || domain.endsWith("." + root)
-  );
+  return cfg.allowedRootDomains.some((root) => domain === root || domain.endsWith("." + root));
 }
 
 // 允许跨域（前端 fetch stats / hit）
@@ -118,20 +116,23 @@ function hitHandler(req, res) {
   const cfg = loadConfig();
 
   const d = sanitizeDomain(req.query.d);
-  if (!d) return res.status(400).json({ ok: false, error: "invalid domain" });
+  if (!d) {
+    return res.status(400).json({ ok: false, error: "invalid_domain", msg: "invalid_domain" });
+  }
 
   if (!isAllowedDomain(d, cfg)) {
-    return res.status(403).json({ ok: false, error: "domain_not_allowed" });
+    return res.status(403).json({ ok: false, error: "domain_not_allowed", msg: "domain_not_allowed" });
   }
 
   const rawIp = getClientIp(req);
   const ip = cfg.anonymizeIp ? anonymizeIp(rawIp) : rawIp;
 
+  const now = Date.now();
+
   withLock(() => {
     const db = readData();
     if (!db.domains[d]) db.domains[d] = { total: 0, last: 0, ips: {} };
 
-    const now = Date.now();
     const item = db.domains[d];
     item.total += 1;
     item.last = now;
@@ -145,22 +146,28 @@ function hitHandler(req, res) {
     writeData(db);
   });
 
-  // sendBeacon 不关心响应体
+  // ✅ 默认保持 204（不破坏 sendBeacon/原逻辑）
+  const debug = String(req.query.debug || "") === "1";
+  if (debug) {
+    return res.json({ ok: true, domain: d, ts: now });
+  }
   res.status(204).end();
 }
 
 app.get("/hit", hitHandler);
 app.post("/hit", hitHandler);
 
-// 查询：可选 includeIps=1 返回 ip 统计；默认不返回 ip（更安全、更轻）
+// stats
 app.get("/stats", (req, res) => {
   const cfg = loadConfig();
 
   const d = sanitizeDomain(req.query.d);
-  if (!d) return res.status(400).json({ ok: false, error: "invalid domain" });
+  if (!d) {
+    return res.status(400).json({ ok: false, error: "invalid_domain", msg: "invalid_domain" });
+  }
 
   if (!isAllowedDomain(d, cfg)) {
-    return res.status(403).json({ ok: false, error: "domain_not_allowed" });
+    return res.status(403).json({ ok: false, error: "domain_not_allowed", msg: "domain_not_allowed" });
   }
 
   const includeIps = String(req.query.includeIps || "") === "1";
@@ -170,9 +177,7 @@ app.get("/stats", (req, res) => {
 
   const payload = { ok: true, domain: d, total: item.total, last: item.last };
 
-  if (includeIps) {
-    payload.ips = item.ips; // 注意：可能很大
-  }
+  if (includeIps) payload.ips = item.ips;
 
   res.json(payload);
 });
